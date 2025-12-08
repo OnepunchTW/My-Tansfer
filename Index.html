@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>通勤轉乘指揮官</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f3f4f6; }
+        .train-card { transition: all 0.2s; }
+        .train-card:active { transform: scale(0.98); }
+        .timeline-line { position: absolute; left: 1.25rem; top: 2rem; bottom: 0; width: 2px; background-color: #d1d5db; z-index: 0; }
+        /* Hide scrollbar for clean UI */
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // --- Station Configuration ---
+        const STATIONS = {
+            TRA: {
+                yuanlin: '3360',
+                xinwuri: '3340',
+                nangang: '0900' // TRA Nangang just in case
+            },
+            HSR: {
+                taichung: '1030',
+                taipei: '1000',
+                nangang: '0990'
+            }
+        };
+
+        // --- Mock Data for Demo Mode ---
+        const MOCK_DATA = {
+            north: [
+                {
+                    id: '1',
+                    tra: { type: '區間快', no: '2004', dep: '07:10', arr: '07:35' }, // Arr Xinwuri
+                    transferTime: '15分',
+                    hsr: { type: '高鐵', no: '0810', dep: '07:50', arr: '08:50' } // Dep Taichung
+                },
+                {
+                    id: '2',
+                    tra: { type: '自強', no: '112', dep: '07:25', arr: '07:48' },
+                    transferTime: '17分',
+                    hsr: { type: '高鐵', no: '0610', dep: '08:05', arr: '09:05' }
+                }
+            ],
+            south: [
+                {
+                    id: '101',
+                    hsr: { type: '高鐵', no: '0845', dep: '18:00', arr: '19:05' }, // Arr Taichung
+                    transferTime: '20分',
+                    tra: { type: '區間', no: '2243', dep: '19:25', arr: '19:50' } // Dep Xinwuri
+                }
+            ]
+        };
+
+        // --- Helper Functions ---
+        const getTodayDateStr = () => {
+            const d = new Date();
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+
+        const addMinutes = (timeStr, mins) => {
+            const [h, m] = timeStr.split(':').map(Number);
+            const date = new Date();
+            date.setHours(h);
+            date.setMinutes(m + mins);
+            return `${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+        };
+
+        const compareTime = (t1, t2) => {
+            const [h1, m1] = t1.split(':').map(Number);
+            const [h2, m2] = t2.split(':').map(Number);
+            return (h1 * 60 + m1) - (h2 * 60 + m2);
+        };
+
+        // --- Components ---
+
+        const ConfigModal = ({ isOpen, onClose, onSave }) => {
+            const [clientId, setClientId] = useState(localStorage.getItem('tdx_client_id') || '');
+            const [clientSecret, setClientSecret] = useState(localStorage.getItem('tdx_client_secret') || '');
+
+            if (!isOpen) return null;
+
+            const handleSave = () => {
+                localStorage.setItem('tdx_client_id', clientId);
+                localStorage.setItem('tdx_client_secret', clientSecret);
+                onSave(clientId, clientSecret);
+                onClose();
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+                        <h2 className="text-xl font-bold mb-4 text-gray-800">TDX API 設定</h2>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-600 mb-1">Client ID</label>
+                                <input type="text" value={clientId} onChange={(e) => setClientId(e.target.value)} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="輸入 ID" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-600 mb-1">Client Secret</label>
+                                <input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="輸入 Secret" />
+                            </div>
+                            <div className="text-xs text-gray-500">
+                                * 您的金鑰僅儲存於手機瀏覽器中，不會上傳。
+                            </div>
+                        </div>
+                        <div className="mt-6 flex gap-3">
+                            <button onClick={onClose} className="flex-1 py-2 text-gray-600 font-medium">取消</button>
+                            <button onClick={handleSave} className="flex-1 py-2 bg-blue-600 text-white rounded-lg font-bold shadow-md active:bg-blue-700">儲存</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const RouteCard = ({ data, direction }) => {
+            const isNorth = direction === 'north';
+            // North: TRA -> Buffer -> HSR
+            // South: HSR -> Buffer -> TRA
+            
+            const firstLeg = isNorth ? data.tra : data.hsr;
+            const secondLeg = isNorth ? data.hsr : data.tra;
+            
+            const firstColor = isNorth ? 'text-blue-700' : 'text-orange-600';
+            const secondColor = isNorth ? 'text-orange-600' : 'text-blue-700';
+            const firstBg = isNorth ? 'bg-blue-100' : 'bg-orange-100';
+            const secondBg = isNorth ? 'bg-orange-100' : 'bg-blue-100';
+            const firstIcon = isNorth ? 'fa-train' : 'fa-train-subway'; // Icon visual tweak
+
+            return (
+                <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-4 train-card relative overflow-hidden">
+                    {/* Visual Connector Line */}
+                    <div className="absolute left-[1.65rem] top-10 bottom-10 w-0.5 bg-gray-300 border-l-2 border-dotted border-gray-300 z-0"></div>
+
+                    {/* Leg 1 */}
+                    <div className="flex items-center relative z-10 mb-4">
+                        <div className={`w-10 h-10 rounded-full ${firstBg} flex items-center justify-center mr-4 shrink-0 shadow-sm`}>
+                            <i className={`fa-solid ${firstIcon} ${firstColor}`}></i>
+                        </div>
+                        <div className="flex-1">
+                            <div className="flex justify-between items-baseline">
+                                <span className="text-xl font-bold text-gray-800">{firstLeg.dep}</span>
+                                <span className={`text-xs font-bold px-2 py-0.5 rounded ${firstBg} ${firstColor}`}>{firstLeg.type} {firstLeg.no}</span>
+                            </div>
+                            <div className="text-xs text-gray-500">
+                                {isNorth ? '員林' : '南港'} <i className="fa-solid fa-arrow-right mx-1"></i> {firstLeg.arr} {isNorth ? '新烏日' : '台中'}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Transfer Info */}
+                    <div className="flex items-center relative z-10 mb-4 pl-[0.8rem]">
+                        <div className="bg-gray-100 text-gray-600 text-xs px-2 py-1 rounded-full border border-gray-200 shadow-sm">
+                            <i className="fa-solid fa-person-walking mr-1"></i>
+                            轉乘 {data.transferTime}
+                        </div>
+                    </div>
+
+                    {/* Leg 2 */}
+                    <div className="flex items-center relative z-10">
+                        <div className={`w-10 h-10 rounded-full ${secondBg} flex items-center justify-center mr-4 shrink-0 shadow-sm`}>
+                            <i className={`fa-solid fa-bolt ${secondColor}`}></i>
+                        </div>
+                        <div className="flex-1">
+                            <div className="flex justify-between items-baseline">
+                                <span className="text-xl font-bold text-gray-800">{secondLeg.dep}</span>
+                                <span className={`text-xs font-bold px-2 py-0.5 rounded ${secondBg} ${secondColor}`}>{secondLeg.type} {secondLeg.no}</span>
+                            </div>
+                            <div className="text-xs text-gray-500">
+                                {isNorth ? '台中' : '新烏日'} <i className="fa-solid fa-arrow-right mx-1"></i> {secondLeg.arr} {isNorth ? '台北' : '員林'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [direction, setDirection] = useState('north'); // 'north' or 'south'
+            const [routes, setRoutes] = useState([]);
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState('');
+            const [isConfigOpen, setIsConfigOpen] = useState(false);
+            const [useDemo, setUseDemo] = useState(true);
+
+            // --- API Logic ---
+            const fetchTDXData = async () => {
+                const clientId = localStorage.getItem('tdx_client_id');
+                const clientSecret = localStorage.getItem('tdx_client_secret');
+
+                if (!clientId || !clientSecret) {
+                    setError('請先設定 API 金鑰');
+                    setUseDemo(true);
+                    return;
+                }
+
+                setLoading(true);
+                setError('');
+                
+                try {
+                    // 1. Get Token
+                    const tokenParams = new URLSearchParams();
+                    tokenParams.append('grant_type', 'client_credentials');
+                    tokenParams.append('client_id', clientId);
+                    tokenParams.append('client_secret', clientSecret);
+
+                    const tokenRes = await fetch('https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: tokenParams
+                    });
+
+                    if (!tokenRes.ok) throw new Error('認證失敗，請檢查金鑰');
+                    const tokenData = await tokenRes.json();
+                    const accessToken = tokenData.access_token;
+
+                    // 2. Fetch Timetables based on direction
+                    const date = getTodayDateStr();
+                    const nowTime = new Date().toTimeString().slice(0, 5); // HH:MM
+
+                    let results = [];
+
+                    if (direction === 'north') {
+                        // TRA Yuanlin -> Xinwuri
+                        const traUrl = `https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/DailyTrainTimetable/OD/${STATIONS.TRA.yuanlin}/to/${STATIONS.TRA.xinwuri}/${date}?$format=JSON`;
+                        // HSR Taichung -> Taipei
+                        const hsrUrl = `https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/DailyTimetable/OD/${STATIONS.HSR.taichung}/to/${STATIONS.HSR.taipei}/${date}?$format=JSON`;
+
+                        const [traRes, hsrRes] = await Promise.all([
+                            fetch(traUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } }),
+                            fetch(hsrUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } })
+                        ]);
+
+                        const traData = await traRes.json();
+                        const hsrData = await hsrRes.json();
+
+                        // Filter TRA trains after now
+                        const validTra = traData.TrainTimetables
+                            .filter(t => compareTime(t.TrainInfo.StartingStationID === STATIONS.TRA.yuanlin ? t.StopTimes[0].DepartureTime : t.StopTimes.find(s=>s.StationID===STATIONS.TRA.yuanlin).DepartureTime, nowTime) > 0)
+                            .sort((a, b) => compareTime(a.StopTimes[0].DepartureTime, b.StopTimes[0].DepartureTime))
+                            .slice(0, 5); // Take next 5 trains
+
+                        // Match with HSR
+                        validTra.forEach(t => {
+                            const yuanlinDep = t.StopTimes.find(s => s.StationID === STATIONS.TRA.yuanlin);
+                            const xinwuriArr = t.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri);
+                            
+                            // Buffer 10 mins
+                            const earliestHsrDep = addMinutes(xinwuriArr.ArrivalTime, 10);
+
+                            const bestHsr = hsrData.filter(h => 
+                                compareTime(h.OriginStopTime.DepartureTime, earliestHsrDep) >= 0
+                            ).sort((a, b) => compareTime(a.OriginStopTime.DepartureTime, b.OriginStopTime.DepartureTime))[0];
+
+                            if (bestHsr) {
+                                results.push({
+                                    id: t.TrainInfo.TrainNo,
+                                    tra: { 
+                                        type: t.TrainInfo.TrainTypeName.Zh_tw.replace('臺鐵', ''), 
+                                        no: t.TrainInfo.TrainNo, 
+                                        dep: yuanlinDep.DepartureTime, 
+                                        arr: xinwuriArr.ArrivalTime 
+                                    },
+                                    transferTime: '緩衝 ' + ((compareTime(bestHsr.OriginStopTime.DepartureTime, xinwuriArr.ArrivalTime))).toString() + '分',
+                                    hsr: { 
+                                        type: '高鐵', 
+                                        no: bestHsr.DailyTrainInfo.TrainNo, 
+                                        dep: bestHsr.OriginStopTime.DepartureTime, 
+                                        arr: bestHsr.DestinationStopTime.ArrivalTime 
+                                    }
+                                });
+                            }
+                        });
+
+                    } else {
+                        // South: HSR Nangang -> Taichung, then TRA Xinwuri -> Yuanlin
+                         // HSR Nangang -> Taichung
+                         const hsrUrl = `https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/DailyTimetable/OD/${STATIONS.HSR.nangang}/to/${STATIONS.HSR.taichung}/${date}?$format=JSON`;
+                        // TRA Xinwuri -> Yuanlin
+                        const traUrl = `https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/DailyTrainTimetable/OD/${STATIONS.TRA.xinwuri}/to/${STATIONS.TRA.yuanlin}/${date}?$format=JSON`;
+
+                        const [hsrRes, traRes] = await Promise.all([
+                            fetch(hsrUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } }),
+                            fetch(traUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } })
+                        ]);
+
+                        const hsrData = await hsrRes.json();
+                        const traData = await traRes.json();
+
+                        // Filter HSR trains after now
+                        const validHsr = hsrData
+                            .filter(t => compareTime(t.OriginStopTime.DepartureTime, nowTime) > 0)
+                            .sort((a, b) => compareTime(a.OriginStopTime.DepartureTime, b.OriginStopTime.DepartureTime))
+                            .slice(0, 5);
+
+                        validHsr.forEach(h => {
+                            const taichungArr = h.DestinationStopTime.ArrivalTime;
+                            const earliestTraDep = addMinutes(taichungArr, 10); // Buffer
+
+                            const bestTra = traData.TrainTimetables.filter(t => {
+                                const depTime = t.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri)?.DepartureTime;
+                                return depTime && compareTime(depTime, earliestTraDep) >= 0;
+                            }).sort((a, b) => {
+                                const depA = a.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri).DepartureTime;
+                                const depB = b.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri).DepartureTime;
+                                return compareTime(depA, depB);
+                            })[0];
+
+                            if (bestTra) {
+                                const xinwuriDep = bestTra.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri);
+                                const yuanlinArr = bestTra.StopTimes.find(s => s.StationID === STATIONS.TRA.yuanlin);
+
+                                results.push({
+                                    id: h.DailyTrainInfo.TrainNo,
+                                    hsr: {
+                                        type: '高鐵',
+                                        no: h.DailyTrainInfo.TrainNo,
+                                        dep: h.OriginStopTime.DepartureTime,
+                                        arr: taichungArr
+                                    },
+                                    transferTime: '緩衝 ' + ((compareTime(xinwuriDep.DepartureTime, taichungArr))).toString() + '分',
+                                    tra: {
+                                        type: bestTra.TrainInfo.TrainTypeName.Zh_tw.replace('臺鐵', ''),
+                                        no: bestTra.TrainInfo.TrainNo,
+                                        dep: xinwuriDep.DepartureTime,
+                                        arr: yuanlinArr.ArrivalTime
+                                    }
+                                });
+                            }
+                        });
+                    }
+
+                    setRoutes(results);
+                    setUseDemo(false);
+
+                } catch (err) {
+                    console.error(err);
+                    setError('連線失敗 (可能是CORS限制)。已切換至模擬數據。');
+                    setRoutes(MOCK_DATA[direction]);
+                    setUseDemo(true);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            // Initial Load
+            useEffect(() => {
+                fetchTDXData();
+                const interval = setInterval(fetchTDXData, 60000); // Auto refresh every min
+                return () => clearInterval(interval);
+            }, [direction]);
+
+            const handleManualRefresh = () => {
+                fetchTDXData();
+            };
+
+            return (
+                <div className="max-w-md mx-auto min-h-screen bg-gray-50 flex flex-col">
+                    {/* Header */}
+                    <div className="bg-gradient-to-r from-slate-800 to-slate-900 text-white p-4 pt-6 rounded-b-3xl shadow-lg sticky top-0 z-20">
+                        <div className="flex justify-between items-center mb-4">
+                            <h1 className="text-xl font-bold flex items-center gap-2">
+                                <i className="fa-solid fa-route text-yellow-400"></i>
+                                轉乘指揮官
+                            </h1>
+                            <button onClick={() => setIsConfigOpen(true)} className="text-gray-300 hover:text-white">
+                                <i className="fa-solid fa-gear text-xl"></i>
+                            </button>
+                        </div>
+                        
+                        {/* Direction Toggle */}
+                        <div className="flex bg-slate-700/50 p-1 rounded-xl backdrop-blur-sm">
+                            <button 
+                                onClick={() => setDirection('north')}
+                                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${direction === 'north' ? 'bg-white text-slate-900 shadow-md' : 'text-gray-300 hover:text-white'}`}
+                            >
+                                <i className="fa-solid fa-arrow-up"></i>
+                                北上上班
+                            </button>
+                            <button 
+                                onClick={() => setDirection('south')}
+                                className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${direction === 'south' ? 'bg-white text-slate-900 shadow-md' : 'text-gray-300 hover:text-white'}`}
+                            >
+                                <i className="fa-solid fa-arrow-down"></i>
+                                南下回家
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Status Bar */}
+                    <div className="px-4 py-3 flex justify-between items-center">
+                        <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                            {direction === 'north' ? '員林 ➔ 台北' : '南港 ➔ 員林'}
+                        </span>
+                        <div className="flex items-center gap-2">
+                            {error && <span className="text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full">{error}</span>}
+                            <button onClick={handleManualRefresh} className="text-gray-400 hover:text-blue-600 active:rotate-180 transition-transform">
+                                <i className={`fa-solid fa-rotate-right ${loading ? 'animate-spin text-blue-600' : ''}`}></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Content */}
+                    <div className="flex-1 px-4 pb-6 relative">
+                        {loading && routes.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center h-48 text-gray-400">
+                                <i className="fa-solid fa-circle-notch fa-spin text-3xl mb-2"></i>
+                                <span className="text-sm">計算轉乘組合中...</span>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                {routes.map((route, idx) => (
+                                    <RouteCard key={idx} data={route} direction={direction} />
+                                ))}
+                                {routes.length === 0 && !loading && (
+                                    <div className="text-center py-10 text-gray-400">
+                                        <i className="fa-regular fa-calendar-xmark text-4xl mb-2"></i>
+                                        <p>目前時段無合適班次</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        
+                        {/* Demo Mode Indicator */}
+                        {useDemo && (
+                            <div className="mt-4 p-3 bg-yellow-50 text-yellow-700 text-xs rounded-lg border border-yellow-100">
+                                <i className="fa-solid fa-triangle-exclamation mr-1"></i>
+                                目前顯示模擬數據。請點擊右上角齒輪設定 TDX API ID/Secret 以獲取即時資料。
+                            </div>
+                        )}
+                        
+                        <div className="mt-4 p-4 bg-white rounded-xl shadow-sm text-xs text-gray-500 border border-gray-100">
+                            <h3 className="font-bold mb-2 text-gray-700">轉乘設定備忘：</h3>
+                            <ul className="list-disc pl-4 space-y-1">
+                                <li>台鐵新烏日 ⟷ 高鐵台中：緩衝設定為 10 分鐘。</li>
+                                <li>南港轉乘：緩衝設定為 10 分鐘。</li>
+                                <li>台北車站動線：高鐵下車後轉乘捷運藍線往國父紀念館。</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <ConfigModal 
+                        isOpen={isConfigOpen} 
+                        onClose={() => setIsConfigOpen(false)} 
+                        onSave={handleManualRefresh}
+                    />
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
