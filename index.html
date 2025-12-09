@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>通勤轉乘儀錶板 v2.2 (大字版)</title>
+    <title>通勤轉乘指揮官 v3.0</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- React & ReactDOM -->
@@ -15,16 +15,24 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f3f4f6; padding-bottom: 100px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f3f4f6; padding-bottom: 120px; }
         .glass-nav { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); border-top: 1px solid rgba(0,0,0,0.1); }
+        /* Force 24H look on time inputs if browser allows, though mostly OS dependent */
         input[type="time"]::-webkit-calendar-picker-indicator { background: transparent; bottom: 0; color: transparent; cursor: pointer; height: auto; left: 0; position: absolute; right: 0; top: 0; width: auto; }
+        
+        /* Loading Animation */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); opacity: 0.5; }
+            100% { transform: scale(1.2); opacity: 0; }
+        }
+        .pulse-loader { animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite; }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect, useCallback } = React;
 
         // --- Config Constants ---
         const STATIONS = {
@@ -36,7 +44,7 @@
             TRA_HSR_XINWURI: 10,
             HSR_MRT_NANGANG: 10,
             HSR_MRT_TAIPEI: 10,
-            MRT_TRANSFER_GENERIC: 5
+            MRT_TRAVEL_TIME: 5 // Default internal transfer
         };
 
         const MRT_TRAVEL_TIME = {
@@ -44,7 +52,7 @@
             SYS_TO_NANGANG: 12
         };
 
-        // --- Mock Data ---
+        // --- Mock Data (Fallback) ---
         const MOCK_DATA = {
             north: [
                 {
@@ -55,16 +63,6 @@
                         { type: 'HSR', name: '高鐵 0810', dep: '07:50', arr: '08:50', from: '台中', to: '台北' },
                         { type: 'TRANSFER', time: '10分', loc: '台北轉乘' },
                         { type: 'MRT', name: '捷運藍線', dep: '09:00', arr: '09:15', from: '台北車站', to: '國父紀念館' }
-                    ]
-                },
-                {
-                    totalDuration: '2時05分',
-                    legs: [
-                        { type: 'TRA', name: '自強 112', dep: '07:25', arr: '07:48', from: '員林', to: '新烏日' },
-                        { type: 'TRANSFER', time: '17分', loc: '新烏日/台中' },
-                        { type: 'HSR', name: '高鐵 0610', dep: '08:05', arr: '09:05', from: '台中', to: '台北' },
-                        { type: 'TRANSFER', time: '10分', loc: '台北轉乘' },
-                        { type: 'MRT', name: '捷運藍線', dep: '09:15', arr: '09:30', from: '台北車站', to: '國父紀念館' }
                     ]
                 }
             ],
@@ -85,7 +83,10 @@
         // --- Helpers ---
         const getTodayDateStr = () => {
             const d = new Date();
-            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
         };
 
         const getCurrentTimeStr = () => {
@@ -115,29 +116,19 @@
             let icon = 'fa-train';
             let borderColor = 'border-gray-300';
 
-            // High Contrast Schematic Icons
             if (type === 'TRA') { 
-                bg = 'bg-teal-600'; // Darker background for white icon
-                color = 'text-white'; 
-                icon = 'fa-train'; 
-                borderColor = 'border-teal-700';
+                bg = 'bg-teal-600'; color = 'text-white'; icon = 'fa-train'; borderColor = 'border-teal-700';
             }
             if (type === 'HSR') { 
-                bg = 'bg-orange-500'; 
-                color = 'text-white'; 
-                icon = 'fa-bolt'; // Bolt for High Speed
-                borderColor = 'border-orange-600';
+                bg = 'bg-orange-500'; color = 'text-white'; icon = 'fa-bolt'; borderColor = 'border-orange-600';
             }
             if (type === 'MRT') { 
-                bg = 'bg-blue-700'; 
-                color = 'text-white'; 
-                icon = 'fa-train-subway'; 
-                borderColor = 'border-blue-800';
+                bg = 'bg-blue-700'; color = 'text-white'; icon = 'fa-train-subway'; borderColor = 'border-blue-800';
             }
 
             return (
-                <div className={`w-10 h-10 rounded-full ${bg} border-2 ${borderColor} flex items-center justify-center shrink-0 shadow-md z-10 relative`}>
-                    <i className={`fa-solid ${icon} ${color} text-lg`}></i>
+                <div className={`w-12 h-12 rounded-full ${bg} border-2 ${borderColor} flex items-center justify-center shrink-0 shadow-md z-10 relative`}>
+                    <i className={`fa-solid ${icon} ${color} text-xl`}></i>
                 </div>
             );
         };
@@ -145,32 +136,29 @@
         const LegRow = ({ leg, isLast }) => {
             if (leg.type === 'TRANSFER') {
                 return (
-                    <div className="ml-[1.2rem] pl-6 border-l-4 border-dotted border-gray-300 py-2 my-1 text-sm text-gray-600 flex items-center font-medium">
-                        <i className="fa-solid fa-person-walking mr-2 text-base"></i>
-                        <span>{leg.loc} ({leg.time})</span>
+                    <div className="ml-[1.4rem] pl-6 border-l-4 border-dotted border-gray-300 py-3 my-1 text-base text-gray-600 flex items-center font-medium">
+                        <i className="fa-solid fa-person-walking mr-3"></i>
+                        <span>{leg.loc} <span className="text-gray-400 text-sm">({leg.time})</span></span>
                     </div>
                 );
             }
 
             return (
-                <div className="flex items-start gap-4 relative py-1">
-                    {/* Connection Line */}
-                    {!isLast && <div className="absolute left-[1.15rem] top-10 bottom-[-8px] w-1 bg-gray-200 z-0"></div>}
-                    
+                <div className="flex items-start gap-4 relative py-2">
+                    {!isLast && <div className="absolute left-[1.35rem] top-12 bottom-[-8px] w-1.5 bg-gray-200 z-0"></div>}
                     <TransportIcon type={leg.type} />
-                    
-                    <div className="flex-1 pb-4">
+                    <div className="flex-1 pb-2">
                         <div className="flex justify-between items-baseline mb-1">
-                            <span className="font-bold text-gray-900 text-3xl">{leg.dep}</span>
-                            <span className={`text-sm px-2 py-1 rounded-md font-bold ${
-                                leg.type === 'TRA' ? 'bg-teal-100 text-teal-800' : 
-                                leg.type === 'HSR' ? 'bg-orange-100 text-orange-800' : 
-                                'bg-blue-100 text-blue-900'
+                            <span className="font-bold text-gray-900 text-4xl tracking-tight">{leg.dep}</span>
+                            <span className={`text-sm px-2 py-1 rounded-md font-bold border ${
+                                leg.type === 'TRA' ? 'bg-teal-50 text-teal-800 border-teal-100' : 
+                                leg.type === 'HSR' ? 'bg-orange-50 text-orange-800 border-orange-100' : 
+                                'bg-blue-50 text-blue-900 border-blue-100'
                             }`}>{leg.name}</span>
                         </div>
                         <div className="flex justify-between text-base text-gray-600 font-medium">
                             <span>{leg.from}</span>
-                            <span className="flex items-center gap-1 text-gray-400">
+                            <span className="flex items-center gap-1 text-gray-400 px-2">
                                 <i className="fa-solid fa-arrow-right"></i>
                             </span>
                             <span>{leg.arr} {leg.to}</span>
@@ -182,10 +170,11 @@
 
         const RouteCard = ({ data }) => {
             return (
-                <div className="bg-white rounded-2xl p-5 shadow-md border-l-4 border-l-blue-500 border-y border-r border-gray-200 mb-5">
+                <div className="bg-white rounded-2xl p-5 shadow-lg border-l-8 border-l-blue-600 mb-6">
                     <div className="flex justify-between items-center mb-4 pb-3 border-b border-gray-100">
-                        <span className="text-sm font-bold text-gray-500 flex items-center gap-1">
-                            <i className="fa-regular fa-clock"></i> 總時程 {data.totalDuration}
+                        <span className="text-sm font-bold text-gray-500">
+                            <i className="fa-regular fa-clock mr-1"></i> 
+                            總程 {data.totalDuration}
                         </span>
                         <span className="text-sm font-bold text-white bg-blue-600 px-3 py-1 rounded-full shadow-sm">
                             抵達 {data.legs[data.legs.length-1].arr}
@@ -241,11 +230,11 @@
             const [customTime, setCustomTime] = useState(getCurrentTimeStr());
             const [routes, setRoutes] = useState([]);
             const [loading, setLoading] = useState(false);
-            const [error, setError] = useState('');
             const [isConfigOpen, setIsConfigOpen] = useState(false);
             const [useDemo, setUseDemo] = useState(true);
+            const [lastUpdated, setLastUpdated] = useState('');
 
-            const fetchTDXData = async () => {
+            const fetchTDXData = useCallback(async () => {
                 const clientId = localStorage.getItem('tdx_client_id');
                 const clientSecret = localStorage.getItem('tdx_client_secret');
 
@@ -256,9 +245,9 @@
                 }
 
                 setLoading(true);
-                setError('');
                 
                 try {
+                    // 1. Get Token
                     const tokenParams = new URLSearchParams();
                     tokenParams.append('grant_type', 'client_credentials');
                     tokenParams.append('client_id', clientId);
@@ -278,7 +267,10 @@
                     let results = [];
 
                     if (direction === 'north') {
+                        // 北上：員林 -> 新烏日 -> 台中 -> 台北
+                        // TRA OD
                         const traUrl = `https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/DailyTrainTimetable/OD/${STATIONS.TRA.yuanlin}/to/${STATIONS.TRA.xinwuri}/${date}?$format=JSON`;
+                        // HSR OD
                         const hsrUrl = `https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/DailyTimetable/OD/${STATIONS.HSR.taichung}/to/${STATIONS.HSR.taipei}/${date}?$format=JSON`;
 
                         const [traRes, hsrRes] = await Promise.all([
@@ -289,22 +281,26 @@
                         const traData = await traRes.json();
                         const hsrData = await hsrRes.json();
 
+                        // 1. Find TRA trains AFTER customTime
+                        // 注意：這裡不篩選車種，所有車種 (TrainType) 都會被考慮
                         const validTra = traData.TrainTimetables
                             .filter(t => compareTime(t.StopTimes[0].DepartureTime, customTime) >= 0)
                             .sort((a, b) => compareTime(a.StopTimes[0].DepartureTime, b.StopTimes[0].DepartureTime))
-                            .slice(0, 3);
+                            .slice(0, 3); // 只取最近 3 班
 
                         validTra.forEach(t => {
                             const traInfo = t.TrainInfo;
                             const depStop = t.StopTimes.find(s => s.StationID === STATIONS.TRA.yuanlin);
                             const arrStop = t.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri);
                             
+                            // 2. Find matching HSR (Arrival + Buffer)
                             const earliestHsrDep = addMinutes(arrStop.ArrivalTime, TRANSFER_BUFFER.TRA_HSR_XINWURI);
                             const bestHsr = hsrData
                                 .filter(h => compareTime(h.OriginStopTime.DepartureTime, earliestHsrDep) >= 0)
                                 .sort((a, b) => compareTime(a.OriginStopTime.DepartureTime, b.OriginStopTime.DepartureTime))[0];
 
                             if (bestHsr) {
+                                // 3. Calc MRT
                                 const hsrArrTime = bestHsr.DestinationStopTime.ArrivalTime;
                                 const mrtDepTime = addMinutes(hsrArrTime, TRANSFER_BUFFER.HSR_MRT_TAIPEI);
                                 const mrtArrTime = addMinutes(mrtDepTime, MRT_TRAVEL_TIME.TP_TO_SYS);
@@ -323,6 +319,7 @@
                         });
 
                     } else {
+                        // 南下：國父紀念館 -> 南港 -> 台中 -> 新烏日 -> 員林
                         const mrtDep = customTime;
                         const mrtArrNangang = addMinutes(mrtDep, MRT_TRAVEL_TIME.SYS_TO_NANGANG);
                         const hsrMinDep = addMinutes(mrtArrNangang, TRANSFER_BUFFER.HSR_MRT_NANGANG);
@@ -349,9 +346,12 @@
                             const hsrArr = h.DestinationStopTime.ArrivalTime;
                             
                             const traMinDep = addMinutes(hsrArr, TRANSFER_BUFFER.TRA_HSR_XINWURI);
+                            
+                            // Find matching TRA - Ensure NO FILTER on TrainType
                             const bestTra = traData.TrainTimetables
                                 .filter(t => {
                                     const s = t.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri);
+                                    // 確保這班車在我們抵達高鐵之後才發車
                                     return s && compareTime(s.DepartureTime, traMinDep) >= 0;
                                 })
                                 .sort((a, b) => {
@@ -380,80 +380,98 @@
 
                     setRoutes(results);
                     setUseDemo(false);
+                    setLastUpdated(new Date().toLocaleTimeString('zh-TW', {hour12: false}));
 
                 } catch (err) {
                     console.error(err);
-                    setRoutes(MOCK_DATA[direction]);
+                    // 發生錯誤時，回退到 Mock Data 並保留
+                    setRoutes(MOCK_DATA[direction]); 
                     setUseDemo(true);
                 } finally {
                     setLoading(false);
                 }
-            };
+            }, [direction, customTime]);
 
             useEffect(() => {
                 fetchTDXData();
-            }, [direction, customTime]);
+            }, [fetchTDXData]);
 
             return (
                 <div className="max-w-md mx-auto min-h-screen bg-gray-50 flex flex-col relative">
+                    {/* Header */}
                     <div className="bg-gradient-to-r from-gray-800 to-gray-900 text-white p-6 rounded-b-3xl shadow-lg sticky top-0 z-20">
                         <div className="flex justify-between items-center mb-5">
                             <h1 className="text-2xl font-bold tracking-tight">
                                 <i className="fa-solid fa-diamond-turn-right text-yellow-400 mr-2"></i>
-                                通勤指揮官
+                                通勤指揮官 <span className="text-xs bg-yellow-500 text-black px-1 rounded ml-1">v3.0</span>
                             </h1>
-                            <button onClick={() => setIsConfigOpen(true)}>
-                                <i className="fa-solid fa-gear text-gray-300 text-xl hover:text-white transition"></i>
-                            </button>
+                            <div className="flex gap-3">
+                                <button onClick={() => fetchTDXData()} className="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition active:scale-95">
+                                    <i className={`fa-solid fa-rotate-right ${loading ? 'animate-spin text-yellow-400' : 'text-white'}`}></i>
+                                </button>
+                                <button onClick={() => setIsConfigOpen(true)} className="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition active:scale-95">
+                                    <i className="fa-solid fa-gear text-white"></i>
+                                </button>
+                            </div>
                         </div>
                         
                         <div className="flex bg-gray-700/50 p-1.5 rounded-xl backdrop-blur-md">
                             <button onClick={() => setDirection('north')} className={`flex-1 py-3 rounded-lg text-base font-bold flex items-center justify-center gap-2 transition-all ${direction === 'north' ? 'bg-white text-gray-900 shadow-md' : 'text-gray-300'}`}>
-                                <i className="fa-solid fa-briefcase"></i> 上班
+                                <i className="fa-solid fa-briefcase"></i> 上班 (北上)
                             </button>
                             <button onClick={() => setDirection('south')} className={`flex-1 py-3 rounded-lg text-base font-bold flex items-center justify-center gap-2 transition-all ${direction === 'south' ? 'bg-white text-gray-900 shadow-md' : 'text-gray-300'}`}>
-                                <i className="fa-solid fa-house"></i> 回家
+                                <i className="fa-solid fa-house"></i> 回家 (南下)
                             </button>
                         </div>
                     </div>
 
+                    {/* Content */}
                     <div className="flex-1 px-4 py-5 relative">
-                        {loading ? (
-                            <div className="text-center py-20 text-gray-400">
-                                <i className="fa-solid fa-circle-notch fa-spin text-4xl mb-3"></i>
-                                <p className="text-lg">計算路徑中...</p>
+                        {loading && routes.length === 0 ? (
+                            <div className="text-center py-24 text-gray-400">
+                                <div className="pulse-loader w-12 h-12 bg-blue-100 rounded-full mx-auto mb-4"></div>
+                                <p className="text-lg font-medium text-gray-500">同步官方資料中...</p>
                             </div>
                         ) : (
                             <div>
-                                <div className="mb-3 text-sm text-gray-600 font-bold flex justify-between px-2">
-                                    <span>{direction === 'north' ? '員林出發' : '國父紀念館出發'} ({customTime})</span>
-                                    <span>最近 3 班</span>
+                                <div className="mb-3 text-sm text-gray-500 font-bold flex justify-between px-2 items-end">
+                                    <span>
+                                        {direction === 'north' ? '員林出發' : '國父紀念館出發'} 
+                                        <span className="text-blue-600 ml-1 font-mono text-base">{customTime}</span>
+                                    </span>
+                                    <span className="text-xs text-gray-400 font-normal">
+                                        更新: {lastUpdated || '--:--'}
+                                    </span>
                                 </div>
                                 {routes.map((route, idx) => (
                                     <RouteCard key={idx} data={route} />
                                 ))}
-                                {routes.length === 0 && (
-                                    <div className="text-center py-12 text-gray-400 text-lg">此時段無合適班次</div>
+                                {routes.length === 0 && !loading && (
+                                    <div className="text-center py-12 text-gray-400 text-lg">
+                                        <i className="fa-regular fa-face-frown-open text-4xl mb-3 block"></i>
+                                        此時段後已無合適班次
+                                    </div>
                                 )}
                             </div>
                         )}
                         {useDemo && !loading && (
-                            <div className="text-sm text-center text-yellow-700 bg-yellow-100 p-3 rounded-lg mt-2 font-medium">
+                            <div className="text-sm text-center text-yellow-700 bg-yellow-100 p-3 rounded-lg mt-2 font-medium border border-yellow-200">
                                 <i className="fa-solid fa-triangle-exclamation mr-1"></i>
-                                模擬資料模式：請設定金鑰以取得即時班次
+                                模擬模式：請設定 API 金鑰以取得即時班次
                             </div>
                         )}
                     </div>
 
+                    {/* Time Picker Footer */}
                     <div className="fixed bottom-0 left-0 right-0 glass-nav p-5 pb-8 z-30 flex items-center justify-center max-w-md mx-auto">
-                        <div className="flex items-center gap-4 bg-white px-6 py-3 rounded-full shadow-xl border-2 border-gray-100 w-full max-w-sm cursor-pointer hover:border-blue-200 transition">
-                            <i className="fa-regular fa-clock text-blue-600 text-2xl"></i>
-                            <span className="text-lg font-bold text-gray-600 whitespace-nowrap">出發</span>
+                        <div className="flex items-center gap-4 bg-white px-6 py-3 rounded-full shadow-xl border-2 border-gray-100 w-full max-w-sm cursor-pointer hover:border-blue-300 transition group">
+                            <i className="fa-regular fa-clock text-blue-600 text-2xl group-hover:scale-110 transition-transform"></i>
+                            <span className="text-lg font-bold text-gray-600 whitespace-nowrap">出發時間</span>
                             <input 
                                 type="time" 
                                 value={customTime} 
                                 onChange={(e) => setCustomTime(e.target.value)}
-                                className="flex-1 text-3xl font-bold text-gray-900 bg-transparent outline-none text-right font-mono"
+                                className="flex-1 text-3xl font-bold text-gray-900 bg-transparent outline-none text-right font-mono tracking-wide"
                             />
                         </div>
                     </div>
