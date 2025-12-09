@@ -3,21 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>通勤轉乘指揮官 v3.0</title>
-    <!-- Tailwind CSS -->
+    <title>通勤轉乘指揮官 v3.1 (Fixed)</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <!-- Babel -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f3f4f6; padding-bottom: 120px; }
         .glass-nav { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); border-top: 1px solid rgba(0,0,0,0.1); }
-        /* Force 24H look on time inputs if browser allows, though mostly OS dependent */
         input[type="time"]::-webkit-calendar-picker-indicator { background: transparent; bottom: 0; color: transparent; cursor: pointer; height: auto; left: 0; position: absolute; right: 0; top: 0; width: auto; }
         
         /* Loading Animation */
@@ -44,7 +39,7 @@
             TRA_HSR_XINWURI: 10,
             HSR_MRT_NANGANG: 10,
             HSR_MRT_TAIPEI: 10,
-            MRT_TRAVEL_TIME: 5 // Default internal transfer
+            MRT_TRAVEL_TIME: 5
         };
 
         const MRT_TRAVEL_TIME = {
@@ -95,6 +90,7 @@
         };
 
         const addMinutes = (timeStr, mins) => {
+            if(!timeStr) return "00:00";
             const [h, m] = timeStr.split(':').map(Number);
             const date = new Date();
             date.setHours(h);
@@ -103,6 +99,7 @@
         };
 
         const compareTime = (t1, t2) => {
+            if(!t1 || !t2) return 0;
             const [h1, m1] = t1.split(':').map(Number);
             const [h2, m2] = t2.split(':').map(Number);
             return (h1 * 60 + m1) - (h2 * 60 + m2);
@@ -267,11 +264,11 @@
                     let results = [];
 
                     if (direction === 'north') {
-                        // 北上：員林 -> 新烏日 -> 台中 -> 台北
-                        // TRA OD
-                        const traUrl = `https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/DailyTrainTimetable/OD/${STATIONS.TRA.yuanlin}/to/${STATIONS.TRA.xinwuri}/${date}?$format=JSON`;
-                        // HSR OD
-                        const hsrUrl = `https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/DailyTimetable/OD/${STATIONS.HSR.taichung}/to/${STATIONS.HSR.taipei}/${date}?$format=JSON`;
+                        // 北上：員林(3360) -> 新烏日(3340) -> 台中(1030) -> 台北(1000)
+                        
+                        // FIX: 加入 $orderby 確保資料順序
+                        const traUrl = `https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/DailyTrainTimetable/OD/${STATIONS.TRA.yuanlin}/to/${STATIONS.TRA.xinwuri}/${date}?$format=JSON&$orderby=OriginStopTime/DepartureTime`;
+                        const hsrUrl = `https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/DailyTimetable/OD/${STATIONS.HSR.taichung}/to/${STATIONS.HSR.taipei}/${date}?$format=JSON&$orderby=OriginStopTime/DepartureTime`;
 
                         const [traRes, hsrRes] = await Promise.all([
                             fetch(traUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } }),
@@ -282,19 +279,19 @@
                         const hsrData = await hsrRes.json();
 
                         // 1. Find TRA trains AFTER customTime
-                        // 注意：這裡不篩選車種，所有車種 (TrainType) 都會被考慮
+                        // FIX: OD API 使用 OriginStopTime 而不是 StopTimes 陣列
                         const validTra = traData.TrainTimetables
-                            .filter(t => compareTime(t.StopTimes[0].DepartureTime, customTime) >= 0)
-                            .sort((a, b) => compareTime(a.StopTimes[0].DepartureTime, b.StopTimes[0].DepartureTime))
-                            .slice(0, 3); // 只取最近 3 班
+                            .filter(t => compareTime(t.OriginStopTime.DepartureTime, customTime) >= 0)
+                            .sort((a, b) => compareTime(a.OriginStopTime.DepartureTime, b.OriginStopTime.DepartureTime))
+                            .slice(0, 3); 
 
                         validTra.forEach(t => {
                             const traInfo = t.TrainInfo;
-                            const depStop = t.StopTimes.find(s => s.StationID === STATIONS.TRA.yuanlin);
-                            const arrStop = t.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri);
+                            const traDepTime = t.OriginStopTime.DepartureTime; // FIX: 直接取 OD 欄位
+                            const traArrTime = t.DestinationStopTime.ArrivalTime; // FIX: 直接取 OD 欄位
                             
                             // 2. Find matching HSR (Arrival + Buffer)
-                            const earliestHsrDep = addMinutes(arrStop.ArrivalTime, TRANSFER_BUFFER.TRA_HSR_XINWURI);
+                            const earliestHsrDep = addMinutes(traArrTime, TRANSFER_BUFFER.TRA_HSR_XINWURI);
                             const bestHsr = hsrData
                                 .filter(h => compareTime(h.OriginStopTime.DepartureTime, earliestHsrDep) >= 0)
                                 .sort((a, b) => compareTime(a.OriginStopTime.DepartureTime, b.OriginStopTime.DepartureTime))[0];
@@ -306,9 +303,9 @@
                                 const mrtArrTime = addMinutes(mrtDepTime, MRT_TRAVEL_TIME.TP_TO_SYS);
 
                                 results.push({
-                                    totalDuration: Math.floor((compareTime(mrtArrTime, depStop.DepartureTime))/60) + '時' + (compareTime(mrtArrTime, depStop.DepartureTime)%60) + '分',
+                                    totalDuration: Math.floor((compareTime(mrtArrTime, traDepTime))/60) + '時' + (compareTime(mrtArrTime, traDepTime)%60) + '分',
                                     legs: [
-                                        { type: 'TRA', name: traInfo.TrainTypeName.Zh_tw.replace('臺鐵','') + ' ' + traInfo.TrainNo, dep: depStop.DepartureTime, arr: arrStop.ArrivalTime, from: '員林', to: '新烏日' },
+                                        { type: 'TRA', name: traInfo.TrainTypeName.Zh_tw.replace('臺鐵','') + ' ' + traInfo.TrainNo, dep: traDepTime, arr: traArrTime, from: '員林', to: '新烏日' },
                                         { type: 'TRANSFER', time: TRANSFER_BUFFER.TRA_HSR_XINWURI + '分', loc: '新烏日轉乘' },
                                         { type: 'HSR', name: '高鐵 ' + bestHsr.DailyTrainInfo.TrainNo, dep: bestHsr.OriginStopTime.DepartureTime, arr: bestHsr.DestinationStopTime.ArrivalTime, from: '台中', to: '台北' },
                                         { type: 'TRANSFER', time: TRANSFER_BUFFER.HSR_MRT_TAIPEI + '分', loc: '台北轉捷運' },
@@ -324,8 +321,8 @@
                         const mrtArrNangang = addMinutes(mrtDep, MRT_TRAVEL_TIME.SYS_TO_NANGANG);
                         const hsrMinDep = addMinutes(mrtArrNangang, TRANSFER_BUFFER.HSR_MRT_NANGANG);
 
-                        const hsrUrl = `https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/DailyTimetable/OD/${STATIONS.HSR.nangang}/to/${STATIONS.HSR.taichung}/${date}?$format=JSON`;
-                        const traUrl = `https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/DailyTrainTimetable/OD/${STATIONS.TRA.xinwuri}/to/${STATIONS.TRA.yuanlin}/${date}?$format=JSON`;
+                        const hsrUrl = `https://tdx.transportdata.tw/api/basic/v2/Rail/THSR/DailyTimetable/OD/${STATIONS.HSR.nangang}/to/${STATIONS.HSR.taichung}/${date}?$format=JSON&$orderby=OriginStopTime/DepartureTime`;
+                        const traUrl = `https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/DailyTrainTimetable/OD/${STATIONS.TRA.xinwuri}/to/${STATIONS.TRA.yuanlin}/${date}?$format=JSON&$orderby=OriginStopTime/DepartureTime`;
 
                         const [hsrRes, traRes] = await Promise.all([
                             fetch(hsrUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } }),
@@ -347,31 +344,24 @@
                             
                             const traMinDep = addMinutes(hsrArr, TRANSFER_BUFFER.TRA_HSR_XINWURI);
                             
-                            // Find matching TRA - Ensure NO FILTER on TrainType
+                            // FIX: 使用 OD 結構進行過濾
                             const bestTra = traData.TrainTimetables
-                                .filter(t => {
-                                    const s = t.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri);
-                                    // 確保這班車在我們抵達高鐵之後才發車
-                                    return s && compareTime(s.DepartureTime, traMinDep) >= 0;
-                                })
-                                .sort((a, b) => {
-                                    const da = a.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri).DepartureTime;
-                                    const db = b.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri).DepartureTime;
-                                    return compareTime(da, db);
-                                })[0];
+                                .filter(t => compareTime(t.OriginStopTime.DepartureTime, traMinDep) >= 0)
+                                .sort((a, b) => compareTime(a.OriginStopTime.DepartureTime, b.OriginStopTime.DepartureTime))[0];
                             
                             if (bestTra) {
-                                const traDepStop = bestTra.StopTimes.find(s => s.StationID === STATIONS.TRA.xinwuri);
-                                const traArrStop = bestTra.StopTimes.find(s => s.StationID === STATIONS.TRA.yuanlin);
+                                // FIX: 直接取用 OD 屬性
+                                const traDepTime = bestTra.OriginStopTime.DepartureTime;
+                                const traArrTime = bestTra.DestinationStopTime.ArrivalTime;
 
                                 results.push({
-                                    totalDuration: Math.floor((compareTime(traArrStop.ArrivalTime, mrtDep))/60) + '時' + (compareTime(traArrStop.ArrivalTime, mrtDep)%60) + '分',
+                                    totalDuration: Math.floor((compareTime(traArrTime, mrtDep))/60) + '時' + (compareTime(traArrTime, mrtDep)%60) + '分',
                                     legs: [
                                         { type: 'MRT', name: '捷運藍線', dep: mrtDep, arr: mrtArrNangang, from: '國父紀念館', to: '南港' },
                                         { type: 'TRANSFER', time: TRANSFER_BUFFER.HSR_MRT_NANGANG + '分', loc: '南港轉乘' },
                                         { type: 'HSR', name: '高鐵 ' + hsrInfo.TrainNo, dep: hsrDep, arr: hsrArr, from: '南港', to: '台中' },
                                         { type: 'TRANSFER', time: TRANSFER_BUFFER.TRA_HSR_XINWURI + '分', loc: '新烏日轉乘' },
-                                        { type: 'TRA', name: bestTra.TrainInfo.TrainTypeName.Zh_tw.replace('臺鐵','') + ' ' + bestTra.TrainInfo.TrainNo, dep: traDepStop.DepartureTime, arr: traArrStop.ArrivalTime, from: '新烏日', to: '員林' }
+                                        { type: 'TRA', name: bestTra.TrainInfo.TrainTypeName.Zh_tw.replace('臺鐵','') + ' ' + bestTra.TrainInfo.TrainNo, dep: traDepTime, arr: traArrTime, from: '新烏日', to: '員林' }
                                     ]
                                 });
                             }
@@ -383,8 +373,7 @@
                     setLastUpdated(new Date().toLocaleTimeString('zh-TW', {hour12: false}));
 
                 } catch (err) {
-                    console.error(err);
-                    // 發生錯誤時，回退到 Mock Data 並保留
+                    console.error("API Error Details:", err);
                     setRoutes(MOCK_DATA[direction]); 
                     setUseDemo(true);
                 } finally {
@@ -403,7 +392,7 @@
                         <div className="flex justify-between items-center mb-5">
                             <h1 className="text-2xl font-bold tracking-tight">
                                 <i className="fa-solid fa-diamond-turn-right text-yellow-400 mr-2"></i>
-                                通勤指揮官 <span className="text-xs bg-yellow-500 text-black px-1 rounded ml-1">v3.0</span>
+                                通勤指揮官 <span className="text-xs bg-yellow-500 text-black px-1 rounded ml-1">v3.1</span>
                             </h1>
                             <div className="flex gap-3">
                                 <button onClick={() => fetchTDXData()} className="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 flex items-center justify-center transition active:scale-95">
